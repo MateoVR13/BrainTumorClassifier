@@ -1,126 +1,120 @@
 import streamlit as st
 import tensorflow as tf
+import numpy as np
 from PIL import Image
-import os
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
     page_title="Detector de Tumores Cerebrales",
     page_icon="🧠",
     layout="centered",
-    initial_sidebar_state="auto",
+    initial_sidebar_state="expanded"
 )
 
 # --- CACHING DEL MODELO ---
-# Usamos st.cache_resource para cargar el modelo solo una vez.
 @st.cache_resource
-def load_model():
-    """Carga el modelo Keras desde la ruta especificada."""
-    model_path = 'models/best_model_brain_tumor.h5'
-    if not os.path.exists(model_path):
-        st.error(f"Error: No se encuentra el archivo del modelo en la ruta: {model_path}")
-        st.error("Asegúrate de que la carpeta 'models' y el archivo 'best_model_brain_tumor.h5' existan.")
-        return None
+def load_keras_model():
+    """Carga el modelo H5 pre-entrenado."""
     try:
-        model = tf.keras.models.load_model(model_path, compile=False) # compile=False puede acelerar la carga
+        model = tf.keras.models.load_model('brain_tumor_classifier.h5')
         return model
     except Exception as e:
         st.error(f"Error al cargar el modelo: {e}")
-        return None
+        st.stop()
 
-# --- FUNCIONES DE PROCESAMIENTO ---
-def preprocess_image(image_data, target_size=(224, 224)):
-    """Preprocesa la imagen subida para que sea compatible con el modelo."""
-    img = Image.open(image_data)
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    img = img.resize(target_size)
-    img_array = tf.keras.preprocessing.image.img_to_array(img)
-    img_array = img_array / 255.0  # Normalizar
-    img_array = tf.expand_dims(img_array, axis=0)  # Añadir dimensión de batch
-    return img_array
+# --- PREPROCESAMIENTO DE LA IMAGEN ---
+def preprocess_image(image):
+    """
+    Preprocesa la imagen para que coincida con el formato de entrada del modelo.
+    """
+    image = image.resize((224, 224))
+    img_array = np.array(image)
+    if img_array.shape[2] == 4:
+        img_array = img_array[:, :, :3]
+    img_array = np.expand_dims(img_array, axis=0)
+    processed_image = tf.keras.applications.efficientnet.preprocess_input(img_array)
+    return processed_image
 
-# CAMBIO: La función ahora solo devuelve la etiqueta, sin la confianza.
-def make_prediction(model, processed_image):
-    """Realiza la predicción y devuelve únicamente la etiqueta predicha."""
-    prediction = model.predict(processed_image)[0][0]
-    predicted_class_index = int(prediction > 0.5)
-    class_names = ['Sano', 'Tumor']
-    predicted_label = class_names[predicted_class_index]
-    return predicted_label
+# --- FUNCIÓN PRINCIPAL DE LA APP ---
+def main():
+    model = load_keras_model()
 
-# --- INTERFAZ DE LA APLICACIÓN ---
-st.title("Detector de Tumores Cerebrales con EfficientNetB0")
-st.markdown("""
-Esta aplicación utiliza un modelo de **Red Neuronal Convolucional (CNN) EfficientNetB0** para clasificar imágenes de resonancia magnética (MRI) del cerebro. 
-Sube una imagen para determinar si es clasificada como **"Sana"** o si presenta indicios de un **"Tumor"**.
-""")
+    # --- INTERFAZ DE USUARIO CON STREAMLIT ---
+    
+    st.title("🧠 Detector de Tumores Cerebrales")
+    st.caption("Una aplicación para clasificar imágenes de resonancia magnética cerebral.")
 
-# Cargar el modelo
-model = load_model()
+    st.markdown("""
+    Sube una imagen de una resonancia magnética del cerebro y el modelo predecirá si la imagen
+    muestra un cerebro sano o uno con un tumor.
+    """)
 
-if model:
-    # --- BARRA LATERAL PARA LA CARGA DE ARCHIVOS ---
-    st.sidebar.header("Carga tu imagen de MRI")
-    uploaded_file = st.sidebar.file_uploader(
+    # --- CARGA DE ARCHIVOS ---
+    uploaded_file = st.file_uploader(
         "Elige una imagen...", 
         type=["jpg", "jpeg", "png"]
     )
 
     if uploaded_file is not None:
-        # Mostrar la imagen subida
-        st.image(uploaded_file, caption="Imagen de MRI subida.", use_container_width =True)
-        st.write("")
+        image = Image.open(uploaded_file)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.image(image, caption='Imagen subida', use_container_width=True)
 
-        # Botón para iniciar la clasificación
-        if st.button("Clasificar Imagen", type="primary"):
-            with st.spinner('Analizando la imagen... por favor, espera.'):
-                # Preprocesar la imagen
-                processed_image = preprocess_image(uploaded_file)
-                
-                # CAMBIO: Se obtiene solo la etiqueta de la predicción.
-                predicted_label = make_prediction(model, processed_image)
-                
-                # Mostrar los resultados
-                st.subheader("🔮 Resultado del Análisis")
-                
-                # CAMBIO: Se muestra el resultado y se añade una advertencia si es "Tumor".
-                if predicted_label == 'Tumor':
-                    st.error(f"**Diagnóstico Predicho: {predicted_label}**")
-                    st.warning(
-                        "**⚠️ Advertencia Importante:** Aunque el modelo ha sido entrenado para ser preciso, "
-                        "esta herramienta es solo para fines informativos y educativos. "
-                        "**Un diagnóstico real debe ser realizado por un profesional de la salud cualificado.** "
-                        "No utilice este resultado para tomar decisiones médicas."
-                    )
-                else:
-                    st.success(f"**Diagnóstico Predicho: {predicted_label}**")
+        with st.spinner('Clasificando...'):
+            processed_image = preprocess_image(image)
+            prediction = model.predict(processed_image)
+        
+        score = prediction[0][0]
+        
+        with col2:
+            st.subheader("Resultado del Diagnóstico:")
+            
+            if score > 0.5:
+                confidence = score * 100
+                st.error(f"**Diagnóstico: Tumor Detectado**")
+                st.info(f"**Confianza:** {confidence:.2f}%")
+            else:
+                confidence = (1 - score) * 100
+                st.success(f"**Diagnóstico: Cerebro Sano**")
+                st.info(f"**Confianza:** {confidence:.2f}%")
 
-else:
-    st.warning("El modelo no pudo ser cargado. Por favor, revisa la configuración.")
+            st.warning("""
+            **Descargo de responsabilidad:** Este modelo es una herramienta de apoyo y no reemplaza 
+            el diagnóstico de un profesional médico cualificado.
+            """)
 
-# --- SECCIÓN DE INFORMACIÓN TEÓRICA ---
-st.markdown("---")
-with st.expander("ℹ️ ¿Cómo funciona este modelo? - Información Teórica"):
-    st.markdown("""
-    ### Clasificación Binaria
-    El problema que resolvemos aquí es una **clasificación binaria**. Esto significa que solo hay dos posibles resultados o "clases":
-    - **Sano:** La imagen no muestra evidencia de un tumor.
-    - **Tumor:** La imagen muestra características asociadas a un tumor cerebral.
-    El objetivo del modelo es aprender a distinguir entre estas dos clases a partir de los píxeles de una imagen.
-
-    ### Redes Neuronales Convolucionales (CNN)
-    Para tareas de visión por computadora como esta, se utilizan **Redes Neuronales Convolucionales (CNNs)**. Son un tipo de algoritmo de Deep Learning especialmente diseñado para procesar datos con una estructura de rejilla, como las imágenes.
+    # --- BARRA LATERAL CON INFORMACIÓN ---
+    st.sidebar.title("Sobre el Proyecto")
+    st.sidebar.info(
+        "Esta aplicación utiliza un modelo de Red Neuronal Convolucional (CNN) para la clasificación de imágenes médicas."
+    )
     
-    Una CNN aprende a identificar patrones y características de forma jerárquica:
-    1.  **Capas Convolucionales:** Actúan como filtros que detectan características simples como bordes y texturas.
-    2.  **Capas de Agrupación (Pooling):** Reducen el tamaño de la imagen para hacer el proceso más eficiente.
-    3.  **Jerarquía de Características:** A medida que la información avanza por la red, las capas más profundas combinan estas características para reconocer patrones más complejos, como las formas de un tejido sano o las anomalías de un tumor.
-    4.  **Capas Densas (Clasificador):** Al final, estas capas toman las características aprendidas y toman la decisión final: ¿la imagen corresponde a "Sano" o a "Tumor"?
+    # --- NUEVA SECCIÓN: INFORMACIÓN TEÓRICA ---
+    st.sidebar.header("¿Cómo funciona el modelo?")
+    st.sidebar.markdown(
+        """
+        El modelo se basa en una técnica llamada **Aprendizaje por Transferencia** (*Transfer Learning*):
+
+        1.  **Modelo Base (EfficientNetB0):** En lugar de construir una red desde cero, utilizamos 'EfficientNetB0', un modelo de última generación ya pre-entrenado en millones de imágenes del dataset *ImageNet*. Este modelo ya es un experto en reconocer patrones, texturas y formas complejas.
+
+        2.  **Congelación de Capas:** "Congelamos" las capas del modelo base para que no pierdan su conocimiento general sobre cómo "ver" las imágenes.
+
+        3.  **Capa de Clasificación:** Añadimos nuevas capas personalizadas al final del modelo. Solo estas nuevas capas se entrenan con nuestro dataset de resonancias. De esta forma, el modelo aprende a usar el conocimiento de EfficientNetB0 para la tarea específica de distinguir entre un cerebro sano y uno con tumor.
+
+        4.  **Salida Sigmoid:** La capa final utiliza una función de activación 'sigmoid', que produce un único valor entre 0 y 1. Este valor se interpreta como la probabilidad de que la imagen contenga un tumor, permitiendo una clasificación binaria.
+        """
+    )
     
-    Este modelo fue entrenado con miles de imágenes previamente etiquetadas para aprender a realizar esta tarea.
+    # --- NUEVA SECCIÓN: CRÉDITOS ---
+    st.sidebar.header("Presentado por:")
+    st.sidebar.markdown("""
+    - Isabella Yusunguaira
+    - Mariana Neira
+    - Maria Macías
     """)
 
-# --- PIE DE PÁGINA ---
-st.sidebar.markdown("---")
-st.sidebar.info("App desarrollada para demostrar la clasificación de imágenes con TensorFlow y Streamlit.")
+
+if __name__ == '__main__':
+    main()
